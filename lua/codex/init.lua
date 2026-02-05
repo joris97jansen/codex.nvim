@@ -3,6 +3,21 @@ local installer = require 'codex.installer'
 local state = require 'codex.state'
 
 local M = {}
+local config
+
+local function enter_terminal_mode()
+  vim.schedule(function()
+    if
+      config.auto_insert
+      and state.win and vim.api.nvim_win_is_valid(state.win)
+      and state.buf and vim.api.nvim_buf_is_valid(state.buf)
+      and vim.bo[state.buf].buftype == 'terminal'
+    then
+      vim.api.nvim_set_current_win(state.win)
+      vim.cmd('startinsert')
+    end
+  end)
+end
 
 local config = {
   keymaps = {
@@ -17,6 +32,7 @@ local config = {
   autoinstall = true,
   panel     = false,   -- if true, open Codex in a side-panel instead of floating window
   use_buffer = false,  -- if true, capture Codex stdout into a normal buffer instead of a terminal
+  auto_insert = true,  -- if true, enter terminal mode on focus/open
 }
 
 function M.setup(user_config)
@@ -32,6 +48,26 @@ function M.setup(user_config)
 
   if config.keymaps.toggle then
     vim.api.nvim_set_keymap('n', config.keymaps.toggle, '<cmd>CodexToggle<CR>', { noremap = true, silent = true })
+  end
+
+  if config.auto_insert then
+    local group = vim.api.nvim_create_augroup('CodexAutoInsert', { clear = true })
+    vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter', 'TermOpen', 'TermEnter' }, {
+      group = group,
+      pattern = '*',
+      callback = function(args)
+        local buf = args.buf
+        if vim.bo[buf].filetype ~= 'codex' or vim.bo[buf].buftype ~= 'terminal' then
+          return
+        end
+        vim.schedule(function()
+          if vim.api.nvim_buf_is_valid(buf) then
+            vim.api.nvim_set_current_buf(buf)
+            vim.cmd('startinsert')
+          end
+        end)
+      end,
+    })
   end
 end
 
@@ -121,6 +157,7 @@ function M.open()
 
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_set_current_win(state.win)
+    enter_terminal_mode()
     return
   end
 
@@ -218,7 +255,10 @@ function M.open()
           state.job = nil
         end,
       })
+      enter_terminal_mode()
     end
+  else
+    enter_terminal_mode()
   end
 end
 
