@@ -9,6 +9,7 @@
 - ✅ Optional keymap mapping via `setup` call
 - ✅ Background running when window hidden
 - ✅ Statusline integration via `require('codex').status()`
+- ✅ Browse Codex chat history with `:CodexHistory`
 
 ### Installation:
 
@@ -31,7 +32,7 @@ export OPENAI_API_KEY=your_api_key
 return {
   'kkrampis/codex.nvim',
   lazy = true,
-  cmd = { 'Codex', 'CodexToggle' }, -- Optional: Load only on command execution
+  cmd = { 'Codex', 'CodexToggle', 'CodexHistory', 'CodexHistoryToggle', 'CodexLast', 'CodexPin', 'CodexPinned', 'CodexClearSessions' }, -- Optional: Load only on command execution
   keys = {
     {
       '<leader>cc', -- Change this to your preferred keybinding
@@ -44,6 +45,11 @@ return {
     keymaps     = {
       toggle = nil, -- Keybind to toggle Codex window (Disabled by default, watch out for conflicts)
       quit = '<C-q>', -- Keybind to close the Codex window (default: Ctrl + q)
+      history = '<leader>ch', -- Keybind to toggle Codex history
+      term_normal = '<Esc><Esc>', -- Enter terminal-normal mode
+      last = '<leader>cl', -- Resume last Codex session
+      pin = '<leader>cp', -- Pin current Codex session
+      pinned = '<leader>cP', -- Resume pinned Codex session
     },         -- Disable internal default keymap (<leader>cc -> :CodexToggle)
     border      = 'rounded',  -- Options: 'single', 'double', or 'rounded'
     width       = 0.8,        -- Width of the floating window (0.0 to 1.0)
@@ -52,11 +58,27 @@ return {
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
+    auto_insert = true,       -- Enter terminal mode on open/focus
+    history     = {
+      max_entries = 200,      -- Limit entries in history list
+      max_files = 1000,       -- Limit session files scanned for history (perf)
+      auto_close_active = true, -- Close active session when resuming from history
+      ui = 'buffer',          -- 'buffer' or 'telescope' (requires telescope.nvim)
+      persist_pin = true,     -- Persist pinned session across restarts
+      persist_last = true,    -- Persist last session across restarts
+    },
   },
 }```
 
 ### Usage:
 - Call `:Codex` (or `:CodexToggle`) to open or close the Codex popup or side-panel.
+- Call `:CodexHistory` to browse past Codex sessions and resume them.
+- Call `:CodexHistoryToggle` to switch between the live Codex session and history in the same window.
+- Call `:CodexLast` to resume the most recent Codex session.
+- Call `:CodexPin` to pin the current resumed session, and `:CodexPinned` to jump back to it.
+- Call `:CodexClearSessions` to clear pinned and last sessions.
+- Use `Tab` to toggle between Codex and history when the Codex window is focused.
+- If `history.ui = 'telescope'`, the toggle command opens the Telescope picker instead of swapping the Codex window.
 - Map your own keybindings via the `keymaps.toggle` setting.
 - To choose floating popup vs side-panel, set `panel = false` (popup) or `panel = true` (panel) in your setup options.
 - To capture Codex output in an editable buffer instead of a terminal, set `use_buffer = true` (or `false` to keep terminal) in your setup options.

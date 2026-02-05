@@ -110,4 +110,30 @@ describe('codex.nvim', function()
     -- Restore original
     vim.fn = original_fn
   end)
+
+  it('returns most recent session id from history', function()
+    local original_fn = vim.fn
+
+    vim.fn = setmetatable({
+      globpath = function()
+        return { '/tmp/a.jsonl', '/tmp/b.jsonl' }
+      end,
+      readfile = function(path, _, __)
+        if path == '/tmp/a.jsonl' then
+          return { '{"type":"session_meta","payload":{"id":"a","timestamp":"2025-01-01T00:00:00Z"}}' }
+        end
+        return { '{"type":"session_meta","payload":{"id":"b","timestamp":"2025-02-01T00:00:00Z"}}' }
+      end,
+      expand = function()
+        return '/tmp'
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.history'] = nil
+    local history = require 'codex.history'
+    local id = history.latest_session_id()
+    eq(id, 'b')
+
+    vim.fn = original_fn
+  end)
 end)
