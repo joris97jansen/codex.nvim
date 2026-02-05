@@ -4,6 +4,20 @@ local state = require 'codex.state'
 
 local M = {}
 
+local function enter_terminal_mode()
+  vim.schedule(function()
+    if
+      config.auto_insert
+      and state.win and vim.api.nvim_win_is_valid(state.win)
+      and state.buf and vim.api.nvim_buf_is_valid(state.buf)
+      and vim.bo[state.buf].buftype == 'terminal'
+    then
+      vim.api.nvim_set_current_win(state.win)
+      vim.cmd('startinsert')
+    end
+  end)
+end
+
 local config = {
   keymaps = {
     toggle = nil,
@@ -130,6 +144,25 @@ function M.setup(user_config)
       end
     end,
   })
+  if config.auto_insert then
+    local auto_group = vim.api.nvim_create_augroup('CodexAutoInsert', { clear = true })
+    vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter', 'TermOpen', 'TermEnter' }, {
+      group = auto_group,
+      pattern = '*',
+      callback = function(args)
+        local buf = args.buf
+        if vim.bo[buf].filetype ~= 'codex' or vim.bo[buf].buftype ~= 'terminal' then
+          return
+        end
+        vim.schedule(function()
+          if vim.api.nvim_buf_is_valid(buf) then
+            vim.api.nvim_set_current_buf(buf)
+            vim.cmd('startinsert')
+          end
+        end)
+      end,
+    })
+  end
 end
 
 local function open_window(buf)
@@ -250,6 +283,7 @@ function M.open(cmd_args)
       vim.api.nvim_win_set_buf(state.win, state.buf)
       update_winbar(state.win)
     else
+      enter_terminal_mode()
       return
     end
   end
@@ -368,15 +402,10 @@ function M.open(cmd_args)
           state.job = nil
         end,
       })
-      if config.auto_insert then
-        vim.schedule(function()
-          if state.win and vim.api.nvim_win_is_valid(state.win) then
-            vim.api.nvim_set_current_win(state.win)
-            vim.cmd('startinsert')
-          end
-        end)
-      end
+      enter_terminal_mode()
     end
+  else
+    enter_terminal_mode()
   end
 end
 
