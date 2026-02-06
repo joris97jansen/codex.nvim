@@ -445,8 +445,19 @@ move_buf_to_panel = function(buf)
   end
   open_panel(buf)
   update_winbar(state.win)
-  if config.panel_auto_insert and vim.bo[buf].buftype == 'terminal' then
-    vim.cmd('startinsert')
+  if vim.bo[buf].buftype == 'terminal' and (config.panel_auto_insert or vim.b[buf].codex_force_insert_on_move) then
+    local target_win = state.win
+    vim.b[buf].codex_force_insert_on_move = nil
+    vim.schedule(function()
+      if not (target_win and vim.api.nvim_win_is_valid(target_win)) then
+        return
+      end
+      if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+        return
+      end
+      vim.api.nvim_set_current_win(target_win)
+      vim.cmd('startinsert')
+    end)
   end
   if was_float and cur ~= state.panel_win and vim.api.nvim_win_is_valid(cur) then
     close_win_safe(cur)
@@ -651,6 +662,7 @@ function M.open(cmd_args, opts)
   vim.b[state.buf].codex_no_auto_insert = not should_auto_insert
   if new_session and config.open_new_session_in_panel_on_enter and not use_panel and not use_buffer then
     vim.b[state.buf].codex_move_to_panel_on_enter = true
+    vim.b[state.buf].codex_force_insert_on_move = true
   end
 
   if use_panel then open_panel() else open_window() end
