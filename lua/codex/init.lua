@@ -3,26 +3,70 @@ local installer = require 'codex.installer'
 local state = require 'codex.state'
 
 local M = {}
+local apply_quit_keymaps
+local config
+
+local function close_win_safe(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return
+  end
+  local cfg = vim.api.nvim_win_get_config(win)
+  local is_float = cfg and cfg.relative ~= ''
+  local normal_wins = {}
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    local c = vim.api.nvim_win_get_config(w)
+    if c and c.relative == '' then
+      table.insert(normal_wins, w)
+    end
+  end
+  if not is_float and #normal_wins <= 1 then
+    pcall(vim.cmd, 'quit')
+    return
+  end
+  vim.api.nvim_win_close(win, true)
+end
 
 local function enter_terminal_mode()
   vim.schedule(function()
-    if
-      config.auto_insert
-      and state.win and vim.api.nvim_win_is_valid(state.win)
-      and state.buf and vim.api.nvim_buf_is_valid(state.buf)
-      and vim.bo[state.buf].buftype == 'terminal'
-    then
-      vim.api.nvim_set_current_win(state.win)
-      vim.cmd('startinsert')
+    local win = state.win
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+      return
     end
+    local buf = vim.api.nvim_win_get_buf(win)
+    if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+      return
+    end
+    if vim.bo[buf].buftype ~= 'terminal' then
+      return
+    end
+    local should = vim.b[buf].codex_should_auto_insert
+    if should == nil then
+      -- fallback to config defaults
+      if win == state.panel_win then
+        should = config.panel_auto_insert
+      else
+        should = config.auto_insert
+      end
+    end
+    if not should then
+      return
+    end
+    vim.api.nvim_set_current_win(win)
+    vim.cmd('startinsert')
   end)
 end
 
-local config = {
+local function strip_ansi(s)
+  if not s then return '' end
+  return s:gsub('\27%[[0-9;]*[A-Za-z]', '')
+end
+
+config = {
   keymaps = {
     toggle = nil,
-    quit = '<C-q>', -- Default: Ctrl+q to quit
+    quit = { '<C-q>', '<C-c>', 'ZZ' }, -- Default: Ctrl+q, Ctrl+c, or ZZ to quit
     history = '<leader>ch',
+    history_list = nil,
     term_normal = '<Esc><Esc>', -- Enter terminal-normal mode
     last = '<leader>cl',
     pin = '<leader>cp',
@@ -31,19 +75,25 @@ local config = {
   border = 'single',
   width = 0.8,
   height = 0.8,
+  panel_width = 0.15, -- Width for side-panel (percentage of total columns)
   cmd = 'codex',
   model = nil, -- Default to the latest model
   autoinstall = true,
   panel     = false,   -- if true, open Codex in a side-panel instead of floating window
   use_buffer = false,  -- if true, capture Codex stdout into a normal buffer instead of a terminal
   auto_insert = true,  -- if true, enter terminal mode on open/focus
+  panel_auto_insert = false, -- default: side panel opens in normal mode
+  render_markdown = true, -- if true, render Codex output as markdown (forces use_buffer)
   history = {
     max_entries = 200,
     max_files = 1000,
     auto_close_active = true,
     ui = 'buffer', -- 'buffer' or 'telescope' (requires telescope.nvim)
+    open_last_on_toggle = false, -- if true, toggle history key opens last session
+    open_session_in_panel = false, -- if true, resume from history opens chat in side panel
     persist_pin = true,
     persist_last = true,
+    skip_empty = true, -- hide history entries with no chat content
   },
 }
 
@@ -105,6 +155,11 @@ function M.setup(user_config)
     vim.api.nvim_set_keymap('t', config.keymaps.history, [[<C-\><C-n><cmd>CodexHistoryToggle<CR>]], { noremap = true, silent = true })
   end
 
+  if config.keymaps.history_list then
+    vim.api.nvim_set_keymap('n', config.keymaps.history_list, '<cmd>CodexHistory<CR>', { noremap = true, silent = true })
+    vim.api.nvim_set_keymap('t', config.keymaps.history_list, [[<C-\><C-n><cmd>CodexHistory<CR>]], { noremap = true, silent = true })
+  end
+
   if config.keymaps.last then
     vim.api.nvim_set_keymap('n', config.keymaps.last, '<cmd>CodexLast<CR>', { noremap = true, silent = true })
   end
@@ -124,18 +179,28 @@ function M.setup(user_config)
     pattern = 'codex',
     callback = function(args)
       local buf = args.buf
-      vim.keymap.set('n', '<Tab>', function()
-        require('codex').toggle_history()
-      end, { buffer = buf, silent = true })
-      vim.keymap.set('t', '<Tab>', function()
-        require('codex').toggle_history()
-      end, { buffer = buf, silent = true })
-
       if config.keymaps.term_normal then
         vim.keymap.set('t', config.keymaps.term_normal, [[<C-\><C-n>]], { buffer = buf, silent = true })
       end
+      apply_quit_keymaps(buf)
+      if vim.bo[buf].buftype == 'terminal' then
+        local function send_to_term(keys)
+          local job_id = vim.b[buf].terminal_job_id
+          if job_id then
+            vim.api.nvim_chan_send(job_id, keys)
+          end
+        end
+        vim.keymap.set('n', '<CR>', function()
+          send_to_term('\n')
+        end, { buffer = buf, silent = true })
+        for _, key in ipairs({ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) do
+          vim.keymap.set('n', key, function()
+            send_to_term(key)
+          end, { buffer = buf, silent = true })
+        end
+      end
 
-      if config.auto_insert then
+      if config.auto_insert and not vim.b[buf].codex_no_auto_insert then
         vim.schedule(function()
           if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == 'terminal' then
             vim.cmd('startinsert')
@@ -161,6 +226,33 @@ function M.setup(user_config)
           end
         end)
       end,
+    })
+  end
+end
+
+local function keymap_list(value)
+  if type(value) == 'table' then
+    return value
+  end
+  if type(value) == 'string' and value ~= '' then
+    return { value }
+  end
+  return {}
+end
+
+apply_quit_keymaps = function(buf)
+  if not config.keymaps.quit then
+    return
+  end
+  local function do_close()
+    require('codex').close()
+  end
+  for _, lhs in ipairs(keymap_list(config.keymaps.quit)) do
+    vim.keymap.set('n', lhs, do_close, { buffer = buf, silent = true })
+    vim.keymap.set('t', lhs, [[<C-\><C-n><cmd>lua require('codex').close()<CR>]], {
+      buffer = buf,
+      silent = true,
+      nowait = true,
     })
   end
 end
@@ -219,16 +311,72 @@ local function open_window(buf)
   })
 end
 
+local function apply_markdown_ui(win, buf)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return
+  end
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  vim.bo[buf].filetype = 'markdown'
+  vim.bo[buf].modifiable = false
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+  vim.wo[win].breakindent = true
+  vim.wo[win].conceallevel = 2
+  vim.wo[win].concealcursor = 'nc'
+  vim.wo[win].scrolloff = 2
+  vim.wo[win].sidescrolloff = 2
+end
+
+local function append_lines(buf, lines)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local was_modifiable = vim.bo[buf].modifiable
+  if not was_modifiable then
+    vim.bo[buf].modifiable = true
+  end
+  vim.api.nvim_buf_set_lines(buf, -1, -1, false, lines)
+  vim.bo[buf].modified = false
+  if not was_modifiable then
+    vim.bo[buf].modifiable = false
+  end
+end
+
+local function replace_lines(buf, lines)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local was_modifiable = vim.bo[buf].modifiable
+  if not was_modifiable then
+    vim.bo[buf].modifiable = true
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modified = false
+  if not was_modifiable then
+    vim.bo[buf].modifiable = false
+  end
+end
+
 --- Open Codex in a side-panel (vertical split) instead of floating window
 local function open_panel(buf)
+  if state.panel_win and vim.api.nvim_win_is_valid(state.panel_win) then
+    vim.api.nvim_set_current_win(state.panel_win)
+    vim.api.nvim_win_set_buf(state.panel_win, buf or state.buf)
+    state.win = state.panel_win
+    return
+  end
   -- Create a vertical split on the right and show the buffer
   vim.cmd('vertical rightbelow vsplit')
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, buf or state.buf)
   -- Adjust width according to config (percentage of total columns)
-  local width = math.floor(vim.o.columns * config.width)
+  local panel_width = config.panel_width or config.width
+  local width = math.floor(vim.o.columns * panel_width)
   vim.api.nvim_win_set_width(win, width)
   state.win = win
+  state.panel_win = win
 end
 
 local function update_winbar(win)
@@ -236,11 +384,32 @@ local function update_winbar(win)
   local buf = vim.api.nvim_win_get_buf(win)
   local ft = vim.bo[buf].filetype
   if ft == 'codex-history' then
-    vim.api.nvim_win_set_option(win, 'winbar', ' Codex History  |  Tab: Codex ')
+    vim.api.nvim_win_set_option(win, 'winbar', ' Codex History ')
   elseif ft == 'codex' then
-    vim.api.nvim_win_set_option(win, 'winbar', ' Codex  |  Tab: History ')
+    vim.api.nvim_win_set_option(win, 'winbar', ' Codex ')
   else
     vim.api.nvim_win_set_option(win, 'winbar', '')
+  end
+end
+
+local function focus_last_history_entry(buf, win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return
+  end
+  local last_id = state.last_session_id
+  if not last_id or last_id == '' then
+    return
+  end
+  local entries = vim.b[buf].codex_history_entries
+  local header_len = vim.b[buf].codex_history_header_len or 0
+  if type(entries) ~= 'table' then
+    return
+  end
+  for i, entry in ipairs(entries) do
+    if entry.id == last_id then
+      vim.api.nvim_win_set_cursor(win, { header_len + i, 0 })
+      return
+    end
   end
 end
 
@@ -254,37 +423,67 @@ local function resolve_check_cmd(cmd)
   return nil
 end
 
-function M.open(cmd_args)
+function M.open(cmd_args, opts)
+  local use_panel = (opts and opts.panel ~= nil) and opts.panel or config.panel
+  local force_terminal = opts and opts.force_terminal or false
+  local function resolve_auto_insert()
+    if opts and opts.no_auto_insert then
+      return false
+    end
+    if use_panel then
+      return config.panel_auto_insert
+    end
+    return config.auto_insert
+  end
+  local should_auto_insert = resolve_auto_insert()
+  -- Prefer terminal for side panels to avoid TTY issues
+  local use_buffer = (config.use_buffer or config.render_markdown)
+    and not force_terminal
+    and not use_panel
   local function create_clean_buf()
     local buf = vim.api.nvim_create_buf(false, false)
 
-    vim.api.nvim_buf_set_option(buf, 'bufhidden', 'hide')
+    vim.api.nvim_buf_set_option(buf, 'bufhidden', use_buffer and 'wipe' or 'hide')
     vim.api.nvim_buf_set_option(buf, 'swapfile', false)
     vim.api.nvim_buf_set_option(buf, 'filetype', 'codex')
+    if use_buffer then
+      vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+    else
+      -- ensure terminal-friendly buffer
+      vim.api.nvim_buf_set_option(buf, 'buftype', '')
+      vim.api.nvim_buf_set_option(buf, 'modifiable', true)
+    end
+    vim.b[buf].codex_no_auto_insert = not should_auto_insert
 
     -- Apply configured quit keybinding
 
-    if config.keymaps.quit then
-      local quit_cmd = [[<cmd>lua require('codex').close()<CR>]]
-      vim.api.nvim_buf_set_keymap(buf, 't', config.keymaps.quit, [[<C-\><C-n>]] .. quit_cmd, { noremap = true, silent = true })
-      vim.api.nvim_buf_set_keymap(buf, 'n', config.keymaps.quit, quit_cmd, { noremap = true, silent = true })
-    end
+    apply_quit_keymaps(buf)
 
     return buf
   end
 
-  if state.win and vim.api.nvim_win_is_valid(state.win) then
-    vim.api.nvim_set_current_win(state.win)
-    local win_buf = vim.api.nvim_win_get_buf(state.win)
+  local target_win = nil
+  if use_panel and state.panel_win and vim.api.nvim_win_is_valid(state.panel_win) then
+    target_win = state.panel_win
+  elseif state.win and vim.api.nvim_win_is_valid(state.win) then
+    target_win = state.win
+  end
+
+  if target_win then
+    vim.api.nvim_set_current_win(target_win)
+    local win_buf = vim.api.nvim_win_get_buf(target_win)
     if win_buf == state.history_buf or vim.bo[win_buf].filetype == 'codex-history' then
       if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
         state.buf = create_clean_buf()
       end
-      vim.api.nvim_win_set_buf(state.win, state.buf)
-      update_winbar(state.win)
+      vim.api.nvim_win_set_buf(target_win, state.buf)
+      update_winbar(target_win)
     else
-      enter_terminal_mode()
-      return
+      -- keep using existing panel window; ensure it shows codex buffer
+      if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+        vim.api.nvim_win_set_buf(target_win, state.buf)
+        update_winbar(target_win)
+      end
     end
   end
 
@@ -320,13 +519,13 @@ function M.open(cmd_args)
           if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
             state.buf = create_clean_buf()
           end
-          vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, {
+          replace_lines(state.buf, {
             'Autoinstall cancelled or failed.',
             '',
             'You can install manually with:',
             '  npm install -g @openai/codex',
           })
-          if config.panel then open_panel() else open_window() end
+          if use_panel then open_panel() else open_window() end
         end
       end)
       return
@@ -335,7 +534,7 @@ function M.open(cmd_args)
       if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
         state.buf = vim.api.nvim_create_buf(false, false)
       end
-      vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, {
+      replace_lines(state.buf, {
         'Codex CLI not found, autoinstall disabled.',
         '',
         'Install with:',
@@ -343,21 +542,33 @@ function M.open(cmd_args)
         '',
         'Or enable autoinstall in setup: require("codex").setup{ autoinstall = true }',
       })
-      if config.panel then open_panel() else open_window() end
+      if use_panel then open_panel() else open_window() end
       return
     end
   end
 
-  local function is_buf_reusable(buf)
-    return type(buf) == 'number' and vim.api.nvim_buf_is_valid(buf)
+  local function is_buf_reusable(buf, need_buffer_mode)
+    if type(buf) ~= 'number' or not vim.api.nvim_buf_is_valid(buf) then
+      return false
+    end
+    local bt = vim.bo[buf].buftype
+    if need_buffer_mode then
+      return bt == 'nofile'
+    else
+      return bt ~= 'nofile'
+    end
   end
 
-  if not is_buf_reusable(state.buf) then
+  if not is_buf_reusable(state.buf, use_buffer) then
     state.buf = create_clean_buf()
   end
+  vim.b[state.buf].codex_no_auto_insert = not should_auto_insert
 
-  if config.panel then open_panel() else open_window() end
+  if use_panel then open_panel() else open_window() end
   update_winbar(state.win)
+  if use_buffer and config.render_markdown then
+    apply_markdown_ui(state.win, state.buf)
+  end
 
   -- Ensure terminal buffer is clean before starting job
   if vim.api.nvim_buf_is_valid(state.buf) then
@@ -366,8 +577,9 @@ function M.open(cmd_args)
   end
 
   if not state.job then
-    if config.use_buffer then
-      -- capture stdout/stderr into normal buffer
+    if use_buffer then
+      -- capture stdout/stderr into normal buffer; fallback to terminal if CLI needs a real TTY
+      local needs_tty_fallback = false
       state.job = vim.fn.jobstart(cmd_to_run, {
         cwd = vim.loop.cwd(),
         stdout_buffered = true,
@@ -375,7 +587,11 @@ function M.open(cmd_args)
           if not data then return end
           for _, line in ipairs(data) do
             if line ~= '' then
-              vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { line })
+              local norm = strip_ansi(line)
+              append_lines(state.buf, { norm })
+              if norm:match('cursor position could not be read') then
+                needs_tty_fallback = true
+              end
             end
           end
         end,
@@ -383,15 +599,23 @@ function M.open(cmd_args)
           if not data then return end
           for _, line in ipairs(data) do
             if line ~= '' then
-              vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { '[ERR] ' .. line })
+              local norm = strip_ansi(line)
+              if norm:match('stdin is not a terminal') or norm:match('cursor position could not be read') then
+                needs_tty_fallback = true
+              end
+              append_lines(state.buf, { '[ERR] ' .. norm })
             end
           end
         end,
         on_exit = function(_, code)
           state.job = nil
-          vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, {
-            ('[Codex exit: %d]'):format(code),
-          })
+          if needs_tty_fallback and not force_terminal then
+            vim.schedule(function()
+              M.open(cmd_args, { panel = use_panel, force_terminal = true, no_auto_insert = true })
+            end)
+            return
+          end
+          append_lines(state.buf, { ('[Codex exit: %d]'):format(code) })
         end,
       })
     else
@@ -423,6 +647,7 @@ function M.open_history(reuse_win)
     vim.api.nvim_set_current_win(state.win)
     vim.api.nvim_win_set_buf(state.win, buf)
     update_winbar(state.win)
+    focus_last_history_entry(buf, state.win)
     return
   end
 
@@ -432,9 +657,15 @@ function M.open_history(reuse_win)
     open_window(buf)
   end
   update_winbar(state.win)
+  focus_last_history_entry(buf, state.win)
 end
 
 function M.toggle_history()
+  if config.history and config.history.open_last_on_toggle and state.last_session_id then
+    M.open_last()
+    return
+  end
+
   if config.history and config.history.ui == 'telescope' then
     require('codex.history').open()
     return
@@ -461,7 +692,7 @@ function M.toggle_history()
   M.open_history(false)
 end
 
-function M.resume(session_id)
+function M.resume(session_id, opts)
   if not session_id or session_id == '' then
     vim.notify('[codex.nvim] Missing session id for resume', vim.log.levels.ERROR)
     return
@@ -501,7 +732,7 @@ function M.resume(session_id)
     vim.fn.mkdir(dir, 'p')
     vim.fn.writefile({ session_id }, state.last_session_file)
   end
-  M.open(cmd)
+  M.open(cmd, opts)
 end
 
 function M.open_last()
@@ -511,7 +742,11 @@ function M.open_last()
     vim.notify('[codex.nvim] No Codex sessions found', vim.log.levels.WARN)
     return
   end
-  M.resume(id)
+  local opts = nil
+  if config.history and config.history.open_session_in_panel then
+    opts = { panel = true }
+  end
+  M.resume(id, opts)
 end
 
 function M.pin_current()
@@ -551,10 +786,25 @@ function M.clear_sessions()
 end
 
 function M.close()
-  if state.win and vim.api.nvim_win_is_valid(state.win) then
-    vim.api.nvim_win_close(state.win, true)
+  local target_win = nil
+  if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+    local wins = vim.fn.win_findbuf(state.buf)
+    if wins and #wins > 0 then
+      target_win = wins[1]
+    end
   end
-  state.win = nil
+  if not target_win then
+    target_win = state.win
+  end
+  if target_win then
+    close_win_safe(target_win)
+  end
+  if state.win == target_win then
+    state.win = nil
+  end
+  if state.panel_win == target_win then
+    state.panel_win = nil
+  end
 end
 
 function M.toggle()

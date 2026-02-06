@@ -44,8 +44,9 @@ return {
   opts = {
     keymaps     = {
       toggle = nil, -- Keybind to toggle Codex window (Disabled by default, watch out for conflicts)
-      quit = '<C-q>', -- Keybind to close the Codex window (default: Ctrl + q)
+      quit = { '<C-q>', '<C-c>', 'ZZ' }, -- Keybinds to close the Codex window
       history = '<leader>ch', -- Keybind to toggle Codex history
+      history_list = nil, -- Keybind to open Codex history list directly
       term_normal = '<Esc><Esc>', -- Enter terminal-normal mode
       last = '<leader>cl', -- Resume last Codex session
       pin = '<leader>cp', -- Pin current Codex session
@@ -54,16 +55,22 @@ return {
     border      = 'rounded',  -- Options: 'single', 'double', or 'rounded'
     width       = 0.8,        -- Width of the floating window (0.0 to 1.0)
     height      = 0.8,        -- Height of the floating window (0.0 to 1.0)
+    panel_width = 0.20,       -- Width of the side-panel (0.0 to 1.0)
     model       = nil,        -- Optional: pass a string to use a specific model (e.g., 'o3-mini')
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
-    auto_insert = true,       -- Enter terminal mode on open/focus
+    auto_insert = true,       -- Enter terminal mode on open/focus (floating)
+    panel_auto_insert = false,-- Enter insert mode in side-panel (default: stay in normal mode)
+    render_markdown = true,   -- Render Codex output as markdown (forces use_buffer; falls back to terminal if TTY required)
     history     = {
       max_entries = 200,      -- Limit entries in history list
       max_files = 1000,       -- Limit session files scanned for history (perf)
       auto_close_active = true, -- Close active session when resuming from history
       ui = 'buffer',          -- 'buffer' or 'telescope' (requires telescope.nvim)
+      open_last_on_toggle = false, -- Toggle history key opens last session
+      open_session_in_panel = false, -- Resume from history opens chat in side panel
+      skip_empty = true,      -- Hide history entries with no chat content
       persist_pin = true,     -- Persist pinned session across restarts
       persist_last = true,    -- Persist last session across restarts
     },

@@ -3,6 +3,7 @@
 local M = {
   buf = nil,
   win = nil,
+  panel_win = nil,
   job = nil,
   history_buf = nil,
   last_session_id = nil,

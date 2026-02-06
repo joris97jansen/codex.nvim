@@ -29,6 +29,7 @@ local function parse_session_meta(file)
   return {
     id = payload.id,
     timestamp = payload.timestamp,
+    title = payload.title,
     cwd = payload.cwd,
     source = payload.source,
     originator = payload.originator,
@@ -37,6 +38,27 @@ local function parse_session_meta(file)
     repository_url = git.repository_url,
     file = file,
   }
+end
+
+local function session_has_content(file)
+  local lines = vim.fn.readfile(file)
+  if not lines or #lines <= 1 then
+    return false
+  end
+  for i = 2, #lines do
+    local data = decode_json(lines[i])
+    if data then
+      if data.type and data.type ~= 'session_meta' then
+        return true
+      end
+      if data.payload and (data.payload.messages or data.payload.content) then
+        return true
+      end
+    elseif lines[i] ~= '' then
+      return true
+    end
+  end
+  return false
 end
 
 local function short_time(iso)
@@ -48,6 +70,8 @@ end
 local function display_line(entry)
   local time = short_time(entry.timestamp)
   local id = entry.id or 'unknown'
+  local id_short = entry.id and entry.id:sub(1, 8) or ''
+  local title = entry.title or id
   local cwd = entry.cwd or ''
   local branch = entry.branch or ''
   local source = entry.source or ''
@@ -56,7 +80,20 @@ local function display_line(entry)
     source = '[' .. source .. ']'
   end
 
-  return string.format('%s  %s  %s  %s %s', time, id, cwd, branch, source)
+  local parts = { time, title }
+  if id_short ~= '' then
+    table.insert(parts, '[' .. id_short .. ']')
+  end
+  if cwd ~= '' then
+    table.insert(parts, cwd)
+  end
+  if branch ~= '' then
+    table.insert(parts, branch)
+  end
+  if source ~= '' then
+    table.insert(parts, source)
+  end
+  return table.concat(parts, '  ')
 end
 
 local function load_entries(max_entries)
@@ -82,7 +119,11 @@ local function load_entries(max_entries)
   local entries = {}
   for _, file in ipairs(files) do
     local entry = parse_session_meta(file)
-    if entry and entry.id and entry.timestamp then
+    local ok_content = true
+    if config.history and config.history.skip_empty then
+      ok_content = session_has_content(file)
+    end
+    if entry and entry.id and entry.timestamp and ok_content then
       table.insert(entries, entry)
     end
   end
@@ -122,6 +163,16 @@ local function open_telescope(entries)
   local conf = require('telescope.config').values
   local actions = require('telescope.actions')
   local action_state = require('telescope.actions.state')
+  local state = require('codex').get_state()
+  local default_index = nil
+  if state and state.last_session_id then
+    for i, entry in ipairs(entries or {}) do
+      if entry.id == state.last_session_id then
+        default_index = i
+        break
+      end
+    end
+  end
 
   pickers.new({}, {
     prompt_title = 'Codex History',
@@ -131,11 +182,17 @@ local function open_telescope(entries)
         return {
           value = entry,
           display = display_line(entry),
-          ordinal = (entry.timestamp or '') .. ' ' .. (entry.cwd or '') .. ' ' .. (entry.id or ''),
+          ordinal = table.concat({
+            entry.timestamp or '',
+            entry.title or '',
+            entry.cwd or '',
+            entry.id or '',
+          }, ' '),
         }
       end,
     }),
     sorter = conf.generic_sorter({}),
+    default_selection_index = default_index,
     attach_mappings = function(prompt_bufnr, map)
       local function resume_selected()
         local selection = action_state.get_selected_entry()
@@ -143,10 +200,20 @@ local function open_telescope(entries)
           return
         end
         actions.close(prompt_bufnr)
-        require('codex').resume(selection.value.id)
+        local config = require('codex').get_config()
+        local opts = nil
+        if config.history and config.history.open_session_in_panel then
+          opts = { panel = true }
+        end
+        require('codex').resume(selection.value.id, opts)
+      end
+      local function close_picker()
+        actions.close(prompt_bufnr)
       end
       map('i', '<CR>', resume_selected)
       map('n', '<CR>', resume_selected)
+      map('i', '<C-c>', close_picker)
+      map('n', '<C-c>', close_picker)
       return true
     end,
   }):find()
@@ -172,7 +239,7 @@ function M.build_buffer(entries)
 
   local header = {
     'Codex History',
-    'Enter: resume  q: close  /: search  Tab: toggle',
+    'Enter: resume  q: close  /: search',
     '',
   }
 
@@ -201,9 +268,15 @@ function M.build_buffer(entries)
 
   local config = require('codex').get_config()
   if config.keymaps and config.keymaps.quit then
-    vim.keymap.set('n', config.keymaps.quit, function()
-      require('codex').close()
-    end, { buffer = buf, silent = true })
+    local quit_maps = config.keymaps.quit
+    if type(quit_maps) == 'string' then
+      quit_maps = { quit_maps }
+    end
+    for _, lhs in ipairs(quit_maps) do
+      vim.keymap.set('n', lhs, function()
+        require('codex').close()
+      end, { buffer = buf, silent = true })
+    end
   end
 
   if config.keymaps and config.keymaps.history then
@@ -220,11 +293,12 @@ function M.build_buffer(entries)
     if not entry then
       return
     end
-    require('codex').resume(entry.id)
-  end, { buffer = buf, silent = true })
-
-  vim.keymap.set('n', '<Tab>', function()
-    require('codex').toggle_history()
+    local config = require('codex').get_config()
+    local opts = nil
+    if config.history and config.history.open_session_in_panel then
+      opts = { panel = true }
+    end
+    require('codex').resume(entry.id, opts)
   end, { buffer = buf, silent = true })
 
   return buf
