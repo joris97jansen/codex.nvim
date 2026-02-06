@@ -5,6 +5,26 @@ local state = require 'codex.state'
 local M = {}
 local apply_quit_keymaps
 
+local function close_win_safe(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return
+  end
+  local cfg = vim.api.nvim_win_get_config(win)
+  local is_float = cfg and cfg.relative ~= ''
+  local normal_wins = {}
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    local c = vim.api.nvim_win_get_config(w)
+    if c and c.relative == '' then
+      table.insert(normal_wins, w)
+    end
+  end
+  if not is_float and #normal_wins <= 1 then
+    pcall(vim.cmd, 'quit')
+    return
+  end
+  vim.api.nvim_win_close(win, true)
+end
+
 local config = {
   keymaps = {
     toggle = nil,
@@ -710,8 +730,8 @@ function M.close()
   if not target_win then
     target_win = state.win
   end
-  if target_win and vim.api.nvim_win_is_valid(target_win) then
-    vim.api.nvim_win_close(target_win, true)
+  if target_win then
+    close_win_safe(target_win)
   end
   if state.win == target_win then
     state.win = nil
