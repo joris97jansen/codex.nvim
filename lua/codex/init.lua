@@ -4,6 +4,7 @@ local state = require 'codex.state'
 
 local M = {}
 local apply_quit_keymaps
+local config
 
 local function close_win_safe(win)
   if not (win and vim.api.nvim_win_is_valid(win)) then
@@ -25,7 +26,42 @@ local function close_win_safe(win)
   vim.api.nvim_win_close(win, true)
 end
 
-local config = {
+local function enter_terminal_mode()
+  vim.schedule(function()
+    local win = state.win
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+      return
+    end
+    local buf = vim.api.nvim_win_get_buf(win)
+    if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+      return
+    end
+    if vim.bo[buf].buftype ~= 'terminal' then
+      return
+    end
+    local should = vim.b[buf].codex_should_auto_insert
+    if should == nil then
+      -- fallback to config defaults
+      if win == state.panel_win then
+        should = config.panel_auto_insert
+      else
+        should = config.auto_insert
+      end
+    end
+    if not should then
+      return
+    end
+    vim.api.nvim_set_current_win(win)
+    vim.cmd('startinsert')
+  end)
+end
+
+local function strip_ansi(s)
+  if not s then return '' end
+  return s:gsub('\27%[[0-9;]*[A-Za-z]', '')
+end
+
+config = {
   keymaps = {
     toggle = nil,
     quit = { '<C-q>', '<C-c>', 'ZZ' }, -- Default: Ctrl+q, Ctrl+c, or ZZ to quit
@@ -173,6 +209,25 @@ function M.setup(user_config)
       end
     end,
   })
+  if config.auto_insert then
+    local auto_group = vim.api.nvim_create_augroup('CodexAutoInsert', { clear = true })
+    vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter', 'TermOpen', 'TermEnter' }, {
+      group = auto_group,
+      pattern = '*',
+      callback = function(args)
+        local buf = args.buf
+        if vim.bo[buf].filetype ~= 'codex' or vim.bo[buf].buftype ~= 'terminal' then
+          return
+        end
+        vim.schedule(function()
+          if vim.api.nvim_buf_is_valid(buf) then
+            vim.api.nvim_set_current_buf(buf)
+            vim.cmd('startinsert')
+          end
+        end)
+      end,
+    })
+  end
 end
 
 local function keymap_list(value)
@@ -381,7 +436,10 @@ function M.open(cmd_args, opts)
     return config.auto_insert
   end
   local should_auto_insert = resolve_auto_insert()
-  local use_buffer = (config.use_buffer or config.render_markdown) and not force_terminal
+  -- Prefer terminal for side panels to avoid TTY issues
+  local use_buffer = (config.use_buffer or config.render_markdown)
+    and not force_terminal
+    and not use_panel
   local function create_clean_buf()
     local buf = vim.api.nvim_create_buf(false, false)
 
@@ -420,6 +478,12 @@ function M.open(cmd_args, opts)
       end
       vim.api.nvim_win_set_buf(target_win, state.buf)
       update_winbar(target_win)
+    else
+      -- keep using existing panel window; ensure it shows codex buffer
+      if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+        vim.api.nvim_win_set_buf(target_win, state.buf)
+        update_winbar(target_win)
+      end
     end
   end
 
@@ -523,8 +587,9 @@ function M.open(cmd_args, opts)
           if not data then return end
           for _, line in ipairs(data) do
             if line ~= '' then
-              append_lines(state.buf, { line })
-              if line:match('cursor position could not be read') then
+              local norm = strip_ansi(line)
+              append_lines(state.buf, { norm })
+              if norm:match('cursor position could not be read') then
                 needs_tty_fallback = true
               end
             end
@@ -534,10 +599,11 @@ function M.open(cmd_args, opts)
           if not data then return end
           for _, line in ipairs(data) do
             if line ~= '' then
-              if line:match('stdin is not a terminal') or line:match('cursor position could not be read') then
+              local norm = strip_ansi(line)
+              if norm:match('stdin is not a terminal') or norm:match('cursor position could not be read') then
                 needs_tty_fallback = true
               end
-              append_lines(state.buf, { '[ERR] ' .. line })
+              append_lines(state.buf, { '[ERR] ' .. norm })
             end
           end
         end,
@@ -560,15 +626,10 @@ function M.open(cmd_args, opts)
           state.job = nil
         end,
       })
-      if should_auto_insert then
-        vim.schedule(function()
-          if state.win and vim.api.nvim_win_is_valid(state.win) then
-            vim.api.nvim_set_current_win(state.win)
-            vim.cmd('startinsert')
-          end
-        end)
-      end
+      enter_terminal_mode()
     end
+  else
+    enter_terminal_mode()
   end
 end
 
