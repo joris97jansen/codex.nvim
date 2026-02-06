@@ -51,6 +51,7 @@ return {
       last = '<leader>cl', -- Resume last Codex session
       pin = '<leader>cp', -- Pin current Codex session
       pinned = '<leader>cP', -- Resume pinned Codex session
+      panel_toggle = nil, -- Toggle Codex side panel
     },         -- Disable internal default keymap (<leader>cc -> :CodexToggle)
     border      = 'rounded',  -- Options: 'single', 'double', or 'rounded'
     width       = 0.8,        -- Width of the floating window (0.0 to 1.0)
@@ -81,6 +82,7 @@ return {
 
 ### Usage:
 - Call `:Codex` (or `:CodexToggle`) to open or close the Codex popup or side-panel.
+- Call `:CodexPanelToggle` to toggle the Codex side panel.
 - Call `:CodexHistory` to browse past Codex sessions and resume them.
 - Call `:CodexHistoryToggle` to switch between the live Codex session and history in the same window.
 - Call `:CodexLast` to resume the most recent Codex session.

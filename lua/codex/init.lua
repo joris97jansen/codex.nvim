@@ -74,6 +74,7 @@ config = {
     last = '<leader>cl',
     pin = '<leader>cp',
     pinned = '<leader>cP',
+    panel_toggle = nil, -- Keybind to toggle Codex side panel
   },
   border = 'single',
   width = 0.8,
@@ -127,6 +128,10 @@ function M.setup(user_config)
     M.toggle()
   end, { desc = 'Toggle Codex popup (alias)' })
 
+  vim.api.nvim_create_user_command('CodexPanelToggle', function()
+    M.toggle_panel()
+  end, { desc = 'Toggle Codex side panel' })
+
   vim.api.nvim_create_user_command('CodexHistory', function()
     M.open_history(false)
   end, { desc = 'Browse Codex chat history' })
@@ -175,6 +180,11 @@ function M.setup(user_config)
 
   if config.keymaps.pinned then
     vim.api.nvim_set_keymap('n', config.keymaps.pinned, '<cmd>CodexPinned<CR>', { noremap = true, silent = true })
+  end
+
+  if config.keymaps.panel_toggle then
+    vim.api.nvim_set_keymap('n', config.keymaps.panel_toggle, '<cmd>CodexPanelToggle<CR>', { noremap = true, silent = true })
+    vim.api.nvim_set_keymap('t', config.keymaps.panel_toggle, [[<C-\><C-n><cmd>CodexPanelToggle<CR>]], { noremap = true, silent = true })
   end
 
   -- Toggle history from the live Codex terminal
@@ -917,6 +927,28 @@ function M.toggle()
   else
     M.open(nil)
   end
+end
+
+function M.toggle_panel()
+  if state.panel_win and vim.api.nvim_win_is_valid(state.panel_win) then
+    close_win_safe(state.panel_win)
+    if state.win == state.panel_win then
+      state.win = nil
+    end
+    state.panel_win = nil
+    return
+  end
+
+  if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+    open_panel(state.buf)
+    update_winbar(state.win)
+    if config.panel_auto_insert and vim.bo[state.buf].buftype == 'terminal' then
+      vim.cmd('startinsert')
+    end
+    return
+  end
+
+  M.open(nil, { panel = true })
 end
 
 function M.get_config()
