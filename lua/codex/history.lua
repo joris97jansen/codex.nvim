@@ -122,6 +122,16 @@ local function open_telescope(entries)
   local conf = require('telescope.config').values
   local actions = require('telescope.actions')
   local action_state = require('telescope.actions.state')
+  local state = require('codex').get_state()
+  local default_index = nil
+  if state and state.last_session_id then
+    for i, entry in ipairs(entries or {}) do
+      if entry.id == state.last_session_id then
+        default_index = i
+        break
+      end
+    end
+  end
 
   pickers.new({}, {
     prompt_title = 'Codex History',
@@ -136,6 +146,7 @@ local function open_telescope(entries)
       end,
     }),
     sorter = conf.generic_sorter({}),
+    default_selection_index = default_index,
     attach_mappings = function(prompt_bufnr, map)
       local function resume_selected()
         local selection = action_state.get_selected_entry()
@@ -143,10 +154,20 @@ local function open_telescope(entries)
           return
         end
         actions.close(prompt_bufnr)
-        require('codex').resume(selection.value.id)
+        local config = require('codex').get_config()
+        local opts = nil
+        if config.history and config.history.open_session_in_panel then
+          opts = { panel = true }
+        end
+        require('codex').resume(selection.value.id, opts)
+      end
+      local function close_picker()
+        actions.close(prompt_bufnr)
       end
       map('i', '<CR>', resume_selected)
       map('n', '<CR>', resume_selected)
+      map('i', '<C-c>', close_picker)
+      map('n', '<C-c>', close_picker)
       return true
     end,
   }):find()
@@ -172,7 +193,7 @@ function M.build_buffer(entries)
 
   local header = {
     'Codex History',
-    'Enter: resume  q: close  /: search  Tab: toggle',
+    'Enter: resume  q: close  /: search',
     '',
   }
 
@@ -201,9 +222,15 @@ function M.build_buffer(entries)
 
   local config = require('codex').get_config()
   if config.keymaps and config.keymaps.quit then
-    vim.keymap.set('n', config.keymaps.quit, function()
-      require('codex').close()
-    end, { buffer = buf, silent = true })
+    local quit_maps = config.keymaps.quit
+    if type(quit_maps) == 'string' then
+      quit_maps = { quit_maps }
+    end
+    for _, lhs in ipairs(quit_maps) do
+      vim.keymap.set('n', lhs, function()
+        require('codex').close()
+      end, { buffer = buf, silent = true })
+    end
   end
 
   if config.keymaps and config.keymaps.history then
@@ -220,11 +247,12 @@ function M.build_buffer(entries)
     if not entry then
       return
     end
-    require('codex').resume(entry.id)
-  end, { buffer = buf, silent = true })
-
-  vim.keymap.set('n', '<Tab>', function()
-    require('codex').toggle_history()
+    local config = require('codex').get_config()
+    local opts = nil
+    if config.history and config.history.open_session_in_panel then
+      opts = { panel = true }
+    end
+    require('codex').resume(entry.id, opts)
   end, { buffer = buf, silent = true })
 
   return buf
