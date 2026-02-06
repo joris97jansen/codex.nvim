@@ -70,6 +70,7 @@ return {
       ui = 'buffer',          -- 'buffer' or 'telescope' (requires telescope.nvim)
       open_last_on_toggle = false, -- Toggle history key opens last session
       open_session_in_panel = false, -- Resume from history opens chat in side panel
+      skip_empty = true,      -- Hide history entries with no chat content
       persist_pin = true,     -- Persist pinned session across restarts
       persist_last = true,    -- Persist last session across restarts
     },

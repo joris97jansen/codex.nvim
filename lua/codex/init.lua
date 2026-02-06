@@ -57,6 +57,7 @@ local config = {
     open_session_in_panel = false, -- if true, resume from history opens chat in side panel
     persist_pin = true,
     persist_last = true,
+    skip_empty = true, -- hide history entries with no chat content
   },
 }
 
