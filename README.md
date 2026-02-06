@@ -60,7 +60,8 @@ return {
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
-    auto_insert = true,       -- Enter terminal mode on open/focus
+    auto_insert = true,       -- Enter terminal mode on open/focus (floating)
+    panel_auto_insert = false,-- Enter insert mode in side-panel (default: stay in normal mode)
     render_markdown = true,   -- Render Codex output as markdown (forces use_buffer; falls back to terminal if TTY required)
     history     = {
       max_entries = 200,      -- Limit entries in history list

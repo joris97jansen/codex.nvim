@@ -46,6 +46,7 @@ local config = {
   panel     = false,   -- if true, open Codex in a side-panel instead of floating window
   use_buffer = false,  -- if true, capture Codex stdout into a normal buffer instead of a terminal
   auto_insert = true,  -- if true, enter terminal mode on open/focus
+  panel_auto_insert = false, -- default: side panel opens in normal mode
   render_markdown = true, -- if true, render Codex output as markdown (forces use_buffer)
   history = {
     max_entries = 200,
@@ -369,7 +370,16 @@ end
 function M.open(cmd_args, opts)
   local use_panel = (opts and opts.panel ~= nil) and opts.panel or config.panel
   local force_terminal = opts and opts.force_terminal or false
-  local should_auto_insert = config.auto_insert and not (opts and opts.no_auto_insert)
+  local function resolve_auto_insert()
+    if opts and opts.no_auto_insert then
+      return false
+    end
+    if use_panel then
+      return config.panel_auto_insert
+    end
+    return config.auto_insert
+  end
+  local should_auto_insert = resolve_auto_insert()
   local use_buffer = (config.use_buffer or config.render_markdown) and not force_terminal
   local function create_clean_buf()
     local buf = vim.api.nvim_create_buf(false, false)
@@ -384,11 +394,7 @@ function M.open(cmd_args, opts)
       vim.api.nvim_buf_set_option(buf, 'buftype', '')
       vim.api.nvim_buf_set_option(buf, 'modifiable', true)
     end
-    if opts and opts.no_auto_insert then
-      vim.b[buf].codex_no_auto_insert = true
-    else
-      vim.b[buf].codex_no_auto_insert = nil
-    end
+    vim.b[buf].codex_no_auto_insert = not should_auto_insert
 
     -- Apply configured quit keybinding
 
@@ -491,9 +497,7 @@ function M.open(cmd_args, opts)
   if not is_buf_reusable(state.buf, use_buffer) then
     state.buf = create_clean_buf()
   end
-  if opts and opts.no_auto_insert then
-    vim.b[state.buf].codex_no_auto_insert = true
-  end
+  vim.b[state.buf].codex_no_auto_insert = not should_auto_insert
 
   if use_panel then open_panel() else open_window() end
   update_winbar(state.win)
