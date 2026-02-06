@@ -4,6 +4,9 @@ local state = require 'codex.state'
 
 local M = {}
 local apply_quit_keymaps
+local apply_terminal_keymaps
+local move_buf_to_panel
+local update_winbar
 local config
 
 local function close_win_safe(win)
@@ -71,6 +74,7 @@ config = {
     last = '<leader>cl',
     pin = '<leader>cp',
     pinned = '<leader>cP',
+    panel_toggle = nil, -- Keybind to toggle Codex side panel
   },
   border = 'single',
   width = 0.8,
@@ -80,6 +84,8 @@ config = {
   model = nil, -- Default to the latest model
   autoinstall = true,
   panel     = false,   -- if true, open Codex in a side-panel instead of floating window
+  open_new_session_in_panel = false, -- if true, new sessions open in side panel even if panel=false
+  open_new_session_in_panel_on_enter = false, -- if true, new sessions start floating and move to panel on first Enter
   use_buffer = false,  -- if true, capture Codex stdout into a normal buffer instead of a terminal
   auto_insert = true,  -- if true, enter terminal mode on open/focus
   panel_auto_insert = false, -- default: side panel opens in normal mode
@@ -121,6 +127,10 @@ function M.setup(user_config)
   vim.api.nvim_create_user_command('CodexToggle', function()
     M.toggle()
   end, { desc = 'Toggle Codex popup (alias)' })
+
+  vim.api.nvim_create_user_command('CodexPanelToggle', function()
+    M.toggle_panel()
+  end, { desc = 'Toggle Codex side panel' })
 
   vim.api.nvim_create_user_command('CodexHistory', function()
     M.open_history(false)
@@ -172,6 +182,11 @@ function M.setup(user_config)
     vim.api.nvim_set_keymap('n', config.keymaps.pinned, '<cmd>CodexPinned<CR>', { noremap = true, silent = true })
   end
 
+  if config.keymaps.panel_toggle then
+    vim.api.nvim_set_keymap('n', config.keymaps.panel_toggle, '<cmd>CodexPanelToggle<CR>', { noremap = true, silent = true })
+    vim.api.nvim_set_keymap('t', config.keymaps.panel_toggle, [[<C-\><C-n><cmd>CodexPanelToggle<CR>]], { noremap = true, silent = true })
+  end
+
   -- Toggle history from the live Codex terminal
   local group = vim.api.nvim_create_augroup('CodexKeymaps', { clear = true })
   vim.api.nvim_create_autocmd('FileType', {
@@ -183,22 +198,7 @@ function M.setup(user_config)
         vim.keymap.set('t', config.keymaps.term_normal, [[<C-\><C-n>]], { buffer = buf, silent = true })
       end
       apply_quit_keymaps(buf)
-      if vim.bo[buf].buftype == 'terminal' then
-        local function send_to_term(keys)
-          local job_id = vim.b[buf].terminal_job_id
-          if job_id then
-            vim.api.nvim_chan_send(job_id, keys)
-          end
-        end
-        vim.keymap.set('n', '<CR>', function()
-          send_to_term('\n')
-        end, { buffer = buf, silent = true })
-        for _, key in ipairs({ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) do
-          vim.keymap.set('n', key, function()
-            send_to_term(key)
-          end, { buffer = buf, silent = true })
-        end
-      end
+      apply_terminal_keymaps(buf)
 
       if config.auto_insert and not vim.b[buf].codex_no_auto_insert then
         vim.schedule(function()
@@ -207,6 +207,17 @@ function M.setup(user_config)
           end
         end)
       end
+    end,
+  })
+  vim.api.nvim_create_autocmd('TermOpen', {
+    group = group,
+    pattern = '*',
+    callback = function(args)
+      local buf = args.buf
+      if vim.bo[buf].filetype ~= 'codex' then
+        return
+      end
+      apply_terminal_keymaps(buf)
     end,
   })
   if config.auto_insert then
@@ -254,6 +265,43 @@ apply_quit_keymaps = function(buf)
       silent = true,
       nowait = true,
     })
+  end
+end
+
+apply_terminal_keymaps = function(buf)
+  if vim.bo[buf].buftype ~= 'terminal' then
+    return
+  end
+  local function send_to_term(keys)
+    local job_id = vim.b[buf].terminal_job_id
+    if job_id then
+      vim.api.nvim_chan_send(job_id, keys)
+      return true
+    end
+    return false
+  end
+  vim.keymap.set('t', '<CR>', function()
+    local moved = vim.b[buf].codex_move_to_panel_on_enter
+    if moved then
+      vim.b[buf].codex_move_to_panel_on_enter = nil
+    end
+    local ok = send_to_term('\r')
+    if not ok then
+      vim.api.nvim_feedkeys('\r', 'n', false)
+    end
+    if moved then
+      vim.defer_fn(function()
+        move_buf_to_panel(buf)
+      end, 10)
+    end
+  end, { buffer = buf, silent = true })
+  vim.keymap.set('n', '<CR>', function()
+    send_to_term('\n')
+  end, { buffer = buf, silent = true })
+  for _, key in ipairs({ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) do
+    vim.keymap.set('n', key, function()
+      send_to_term(key)
+    end, { buffer = buf, silent = true })
   end
 end
 
@@ -379,7 +427,54 @@ local function open_panel(buf)
   state.panel_win = win
 end
 
-local function update_winbar(win)
+move_buf_to_panel = function(buf)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local cur = vim.api.nvim_get_current_win()
+  local cur_cfg = vim.api.nvim_win_get_config(cur)
+  local was_float = cur_cfg and cur_cfg.relative ~= ''
+  if state.panel_win and vim.api.nvim_win_is_valid(state.panel_win) then
+    vim.api.nvim_set_current_win(state.panel_win)
+    vim.api.nvim_win_set_buf(state.panel_win, buf)
+    state.win = state.panel_win
+    update_winbar(state.win)
+    if was_float and cur ~= state.panel_win and vim.api.nvim_win_is_valid(cur) then
+      close_win_safe(cur)
+    end
+    return
+  end
+  if was_float then
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      local cfg = vim.api.nvim_win_get_config(w)
+      if cfg and cfg.relative == '' then
+        vim.api.nvim_set_current_win(w)
+        break
+      end
+    end
+  end
+  open_panel(buf)
+  update_winbar(state.win)
+  if vim.bo[buf].buftype == 'terminal' and (config.panel_auto_insert or vim.b[buf].codex_force_insert_on_move) then
+    local target_win = state.win
+    vim.b[buf].codex_force_insert_on_move = nil
+    vim.schedule(function()
+      if not (target_win and vim.api.nvim_win_is_valid(target_win)) then
+        return
+      end
+      if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+        return
+      end
+      vim.api.nvim_set_current_win(target_win)
+      vim.cmd('startinsert')
+    end)
+  end
+  if was_float and cur ~= state.panel_win and vim.api.nvim_win_is_valid(cur) then
+    close_win_safe(cur)
+  end
+end
+
+update_winbar = function(win)
   if not win or not vim.api.nvim_win_is_valid(win) then return end
   local buf = vim.api.nvim_win_get_buf(win)
   local ft = vim.bo[buf].filetype
@@ -424,7 +519,19 @@ local function resolve_check_cmd(cmd)
 end
 
 function M.open(cmd_args, opts)
-  local use_panel = (opts and opts.panel ~= nil) and opts.panel or config.panel
+  local new_session = cmd_args == nil
+  local use_panel
+  if opts and opts.panel ~= nil then
+    use_panel = opts.panel
+  elseif config.panel then
+    use_panel = true
+  elseif new_session and config.open_new_session_in_panel_on_enter then
+    use_panel = false
+  elseif new_session and config.open_new_session_in_panel then
+    use_panel = true
+  else
+    use_panel = false
+  end
   local force_terminal = opts and opts.force_terminal or false
   local function resolve_auto_insert()
     if opts and opts.no_auto_insert then
@@ -563,6 +670,10 @@ function M.open(cmd_args, opts)
     state.buf = create_clean_buf()
   end
   vim.b[state.buf].codex_no_auto_insert = not should_auto_insert
+  if new_session and config.open_new_session_in_panel_on_enter and not use_panel and not use_buffer then
+    vim.b[state.buf].codex_move_to_panel_on_enter = true
+    vim.b[state.buf].codex_force_insert_on_move = true
+  end
 
   if use_panel then open_panel() else open_window() end
   update_winbar(state.win)
@@ -602,9 +713,12 @@ function M.open(cmd_args, opts)
               local norm = strip_ansi(line)
               if norm:match('stdin is not a terminal') or norm:match('cursor position could not be read') then
                 needs_tty_fallback = true
+                -- Suppress noisy non-tty errors; we will fall back to a terminal.
+                goto continue
               end
               append_lines(state.buf, { '[ERR] ' .. norm })
             end
+            ::continue::
           end
         end,
         on_exit = function(_, code)
@@ -813,6 +927,28 @@ function M.toggle()
   else
     M.open(nil)
   end
+end
+
+function M.toggle_panel()
+  if state.panel_win and vim.api.nvim_win_is_valid(state.panel_win) then
+    close_win_safe(state.panel_win)
+    if state.win == state.panel_win then
+      state.win = nil
+    end
+    state.panel_win = nil
+    return
+  end
+
+  if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+    open_panel(state.buf)
+    update_winbar(state.win)
+    if config.panel_auto_insert and vim.bo[state.buf].buftype == 'terminal' then
+      vim.cmd('startinsert')
+    end
+    return
+  end
+
+  M.open(nil, { panel = true })
 end
 
 function M.get_config()
