@@ -59,6 +59,8 @@ return {
     model       = nil,        -- Optional: pass a string to use a specific model (e.g., 'o3-mini')
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
+    open_new_session_in_panel = false, -- New sessions open in side panel even if panel=false
+    open_new_session_in_panel_on_enter = false, -- New sessions start floating and move to panel on first Enter
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
     auto_insert = true,       -- Enter terminal mode on open/focus (floating)
     panel_auto_insert = false,-- Enter insert mode in side-panel (default: stay in normal mode)
