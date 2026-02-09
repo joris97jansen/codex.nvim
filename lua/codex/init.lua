@@ -8,6 +8,33 @@ local apply_terminal_keymaps
 local move_buf_to_panel
 local update_winbar
 local config
+local function read_json_file(path)
+  local ok, lines = pcall(vim.fn.readfile, path)
+  if not ok or not lines or #lines == 0 then
+    return nil
+  end
+  local text = table.concat(lines, '\n')
+  local ok_json, data = pcall(vim.json.decode, text)
+  if ok_json then
+    return data
+  end
+  local ok_alt, data_alt = pcall(vim.fn.json_decode, text)
+  if ok_alt then
+    return data_alt
+  end
+  return nil
+end
+
+local function write_json_file(path, data)
+  local ok, encoded = pcall(vim.json.encode, data)
+  if not ok then
+    return false
+  end
+  local dir = vim.fn.fnamemodify(path, ':h')
+  vim.fn.mkdir(dir, 'p')
+  vim.fn.writefile({ encoded }, path)
+  return true
+end
 
 local function close_win_safe(win)
   if not (win and vim.api.nvim_win_is_valid(win)) then
@@ -100,11 +127,36 @@ config = {
     persist_pin = true,
     persist_last = true,
     skip_empty = true, -- hide history entries with no chat content
+    scope = 'repo', -- 'repo', 'cwd', or 'all'
+    show_summary = true,
+    summary_max_lines = 200,
+    summary_max_len = 140,
+    branch_width = 20,
   },
 }
 
 function M.setup(user_config)
   config = vim.tbl_deep_extend('force', config, user_config or {})
+
+  if not vim.g.codex_paste_overridden then
+    vim.g.codex_paste_overridden = true
+    local original_paste = vim.paste
+    vim.paste = function(lines, phase)
+      local buf = vim.api.nvim_get_current_buf()
+      if vim.bo[buf].filetype == 'codex' and vim.bo[buf].buftype == 'terminal' then
+        local job_id = vim.b[buf].terminal_job_id
+        if job_id then
+          local text = table.concat(lines, '\n')
+          if phase == 3 or phase == -1 then
+            text = text .. '\n'
+          end
+          vim.api.nvim_chan_send(job_id, text)
+          return true
+        end
+      end
+      return original_paste(lines, phase)
+    end
+  end
 
   if config.history and config.history.persist_pin then
     local ok, pinned = pcall(vim.fn.readfile, state.pinned_session_file or '')
@@ -117,6 +169,12 @@ function M.setup(user_config)
     local ok, last = pcall(vim.fn.readfile, state.last_session_file or '')
     if ok and last and last[1] and last[1] ~= '' then
       state.last_session_id = last[1]
+    end
+    local by_repo = read_json_file(state.last_session_by_repo_file or '')
+    if type(by_repo) == 'table' then
+      state.last_session_by_repo = by_repo
+    else
+      state.last_session_by_repo = {}
     end
   end
 
@@ -136,9 +194,17 @@ function M.setup(user_config)
     M.open_history(false)
   end, { desc = 'Browse Codex chat history' })
 
+  vim.api.nvim_create_user_command('CodexHistoryPopup', function()
+    M.open_history_popup()
+  end, { desc = 'Browse Codex chat history (popup)' })
+
   vim.api.nvim_create_user_command('CodexHistoryToggle', function()
     M.toggle_history()
   end, { desc = 'Toggle Codex history view' })
+
+  vim.api.nvim_create_user_command('CodexPanelResume', function()
+    M.open_last_in_panel()
+  end, { desc = 'Open last Codex session in side panel' })
 
   vim.api.nvim_create_user_command('CodexLast', function()
     M.open_last()
@@ -808,6 +874,20 @@ function M.open_history(reuse_win)
   focus_last_history_entry(buf, state.win)
 end
 
+function M.open_history_popup()
+  local history = require('codex.history')
+  if config.history and config.history.ui == 'telescope' then
+    history.open()
+    return
+  end
+
+  local buf = history.build_buffer()
+  state.history_buf = buf
+  open_window(buf)
+  update_winbar(state.win)
+  focus_last_history_entry(buf, state.win)
+end
+
 function M.toggle_history()
   if config.history and config.history.open_last_on_toggle and state.last_session_id then
     M.open_last()
@@ -879,6 +959,14 @@ function M.resume(session_id, opts)
     local dir = vim.fn.stdpath('data') .. '/codex.nvim'
     vim.fn.mkdir(dir, 'p')
     vim.fn.writefile({ session_id }, state.last_session_file)
+    local repo_key = require('codex.history').repo_key()
+    if repo_key and repo_key ~= '' then
+      if type(state.last_session_by_repo) ~= 'table' then
+        state.last_session_by_repo = {}
+      end
+      state.last_session_by_repo[repo_key] = session_id
+      write_json_file(state.last_session_by_repo_file, state.last_session_by_repo)
+    end
   end
   M.open(cmd, opts)
 end
@@ -895,6 +983,21 @@ function M.open_last()
     opts = { panel = true }
   end
   M.resume(id, opts)
+end
+
+function M.open_last_in_panel()
+  local history = require('codex.history')
+  local repo_key = history.repo_key()
+  local id = nil
+  if repo_key and state.last_session_by_repo and state.last_session_by_repo[repo_key] then
+    id = state.last_session_by_repo[repo_key]
+  end
+  id = id or state.last_session_id or history.latest_session_id()
+  if not id then
+    vim.notify('[codex.nvim] No Codex sessions found', vim.log.levels.WARN)
+    return
+  end
+  M.resume(id, { panel = true })
 end
 
 function M.pin_current()
