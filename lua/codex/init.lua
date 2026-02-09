@@ -280,6 +280,32 @@ apply_terminal_keymaps = function(buf)
     end
     return false
   end
+  local function get_clipboard_text()
+    if vim.fn.has('mac') == 1 and vim.fn.executable('pbpaste') == 1 then
+      local ok, text = pcall(vim.fn.system, 'pbpaste')
+      if ok and text and text ~= '' then
+        return (text:gsub('\r\n', '\n'))
+      end
+    end
+    local text = vim.fn.getreg('+')
+    if text == '' then
+      text = vim.fn.getreg('*')
+    end
+    if text == '' then
+      text = vim.fn.getreg('"')
+    end
+    return text
+  end
+  local function paste_clipboard()
+    local text = get_clipboard_text()
+    if text == '' then
+      return
+    end
+    local ok = send_to_term(text)
+    if not ok then
+      vim.api.nvim_paste(text, true, -1)
+    end
+  end
   vim.keymap.set('t', '<CR>', function()
     local moved = vim.b[buf].codex_move_to_panel_on_enter
     if moved then
@@ -295,6 +321,14 @@ apply_terminal_keymaps = function(buf)
       end, 10)
     end
   end, { buffer = buf, silent = true })
+  vim.keymap.set('t', '<C-v>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('t', '<C-S-v>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('t', '<C-Insert>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('t', '<D-v>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('n', '<C-v>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('n', '<C-S-v>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('n', '<C-Insert>', paste_clipboard, { buffer = buf, silent = true })
+  vim.keymap.set('n', '<D-v>', paste_clipboard, { buffer = buf, silent = true })
   vim.keymap.set('n', '<CR>', function()
     send_to_term('\n')
   end, { buffer = buf, silent = true })
